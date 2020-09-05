@@ -48,6 +48,37 @@ class SlackBotWrapper:
             except:
                 g_logger.exception("SlackBot Alert Error")
 
+class AlertDecider:
+    def __init__(self, threshold, max_interval):
+        self._threshold = threshold
+        self._max_interval = max_interval
+        self._counter = 1
+        self._counter_steps = 1
+
+    def reset(self):
+        self._counter = 1
+        self._counter_steps = 1
+
+    def check(self, elapsed_secs):
+        ratio = elapsed_secs / self._threshold
+        if ratio > self._counter:
+            return True
+
+        return False
+
+    def update(self, elapsed_secs):
+        ratio = elapsed_secs / self._threshold
+        if ratio > self._counter:
+            self._counter += self._counter_steps
+            if self._counter_steps * self._threshold < self._max_interval:
+                self._counter_steps += 1
+
+    def is_alerted(self):
+        if self._counter > 1:
+            return True
+
+        return False
+
 
 def monitor(name, out_path, interval, saving_period, restart_threshold):
     today_ts = None
@@ -58,12 +89,7 @@ def monitor(name, out_path, interval, saving_period, restart_threshold):
     file_ts = int(time.time())
     file_size = 0
 
-    error_counter = 0
-    def _is_notified(elapsed_secs, threshold, counter):
-        if elapsed_secs/threshold > counter+1:
-            return True
-        else:
-            return False
+    alert_decider = AlertDecider(restart_threshold, 900)
 
     g_logger.info("Monitoring thread starts")
     while g_monitoring:
@@ -118,18 +144,21 @@ def monitor(name, out_path, interval, saving_period, restart_threshold):
             # If filename is different
             if new_filename != filename or new_file_size != file_size:
                 if new_filename != filename:
-                    g_slack.info("IP Cam - Filename", "New file name: %s" % new_filename)
+                    if alert_counter.is_alerted():
+                        g_slack.alert("IP Cam - Filename", "New file name: %s" % new_filename)
+                    else:
+                        g_slack.info("IP Cam - Filename", "New file name: %s" % new_filename)
                     filename = new_filename
                 file_ts = new_file_ts
                 file_size = new_file_size
-                error_counter = 0
+                if alert_counter.is_alerted():
+                    alert_counter.reset()
             elif new_file_ts - file_ts > restart_threshold:
                 msg = "Size of %s has not changed after %d seconds, restart the recording process now" % (
                             filename, new_file_ts - file_ts)
                 g_logger.error(msg)
 
-                if _is_notifed(new_file_ts-file_ts, restart_threshold, error_counter):
-                    error_counter += 1
+                if alert_decider.check(new_file_ts-file_ts):
                     g_slack.alert("IP Cam - FFmpeg Recording Process Stucks", msg)
                 while True:
                     try:
@@ -139,7 +168,9 @@ def monitor(name, out_path, interval, saving_period, restart_threshold):
                         g_logger.critical(e)
                         g_slack.alert("IP Cam - FFmpeg Recording Restart TIMEOUT", "%s\nTrying again..." % e)
                 g_logger.info("FFmpeg recording process restarted successfully")
-                g_slack.info("IP Cam - Restart", "FFmpeg recording process restarted successfully")
+                if alert_decider.check(new_file_ts-file_ts):
+                    g_slack.info("IP Cam - Restart", "FFmpeg recording process restarted successfully")
+                alert_decider.update(new_file_ts-file_ts)
         except:
             g_logger.exception("Monitoring thread has ERROR")
             g_slack.alert("IP Cam - Monitoring Thread ERROR", "Something went wrong in the monitoring thread, please check logs")
