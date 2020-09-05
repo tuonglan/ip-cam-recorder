@@ -58,6 +58,13 @@ def monitor(name, out_path, interval, saving_period, restart_threshold):
     file_ts = int(time.time())
     file_size = 0
 
+    error_counter = 0
+    def _is_notified(elapsed_secs, threshold, counter):
+        if elapsed_secs/threshold > counter+1:
+            return True
+        else:
+            return False
+
     g_logger.info("Monitoring thread starts")
     while g_monitoring:
         try:
@@ -115,11 +122,15 @@ def monitor(name, out_path, interval, saving_period, restart_threshold):
                     filename = new_filename
                 file_ts = new_file_ts
                 file_size = new_file_size
+                error_counter = 0
             elif new_file_ts - file_ts > restart_threshold:
                 msg = "Size of %s has not changed after %d seconds, restart the recording process now" % (
                             filename, new_file_ts - file_ts)
                 g_logger.error(msg)
-                g_slack.alert("IP Cam - FFmpeg Recording Process Stucks", msg)
+
+                if _is_notifed(new_file_ts-file_ts, restart_threshold, error_counter):
+                    error_counter += 1
+                    g_slack.alert("IP Cam - FFmpeg Recording Process Stucks", msg)
                 while True:
                     try:
                         g_recorder.restart(5)
